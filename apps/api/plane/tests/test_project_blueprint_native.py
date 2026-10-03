@@ -43,6 +43,40 @@ class NativeBlueprintTests(TransactionTestCase):
         self.assertFalse(ProjectBlueprintCommand.objects.exists())
         self.assertFalse(Issue.objects.exists())
 
+    def test_catalogue_owner_choices_are_current_scoped_and_sanitized(self):
+        self.actor.display_name = "  \u202eAdmin\t  مدير "
+        self.actor.save()
+        # Native User.save supplies an email-derived default; exercise the
+        # genuinely blank stored-name fallback without invoking that default.
+        User.objects.filter(id=self.owner.id).update(display_name="", first_name="  Amina\n", last_name="  Hassan  ")
+        for index, (role, membership_active, user_active) in enumerate([(5, True, True), (15, False, True), (20, True, False)]):
+            user = User.objects.create(email=f"excluded-{index}@example.test", username=f"excluded-{index}", is_active=user_active)
+            WorkspaceMember.objects.create(workspace=self.workspace, member=user, role=role, is_active=membership_active)
+        outsider = User.objects.create(email="outsider@example.test", username="outsider", is_active=True)
+        other = Workspace.objects.create(name="Other", slug="other-owner-choices", owner=outsider)
+        WorkspaceMember.objects.create(workspace=other, member=outsider, role=20)
+        result = self.call(ProjectBlueprintEndpoint, "get")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data["ownerChoices"], [{"actorId": str(self.actor.id), "label": "Admin مدير"}, {"actorId": str(self.owner.id), "label": "Amina Hassan"}])
+        self.assertFalse(result.data["ownerChoicesTruncated"])
+        self.assertEqual(result.data["ownerChoicesLimit"], 200)
+        WorkspaceMember.objects.filter(workspace=self.workspace, member=self.owner).update(is_active=False)
+        self.assertEqual(self.call(ProjectBlueprintEndpoint, "get").data["ownerChoices"], [{"actorId": str(self.actor.id), "label": "Admin مدير"}])
+        self.assertEqual(self.call(ProjectBlueprintEndpoint, "get", actor=outsider).status_code, 403)
+
+    def test_catalogue_owner_choices_bound_and_always_include_actor_first(self):
+        users = [User(id=uuid4(), email=f"bounded-{i}@example.test", username=f"bounded-{i}", display_name="x" * 255, is_active=True) for i in range(199)]
+        User.objects.bulk_create(users)
+        WorkspaceMember.objects.bulk_create([WorkspaceMember(workspace=self.workspace, member=u, role=15) for u in users])
+        result = self.call(ProjectBlueprintEndpoint, "get").data
+        choices = result["ownerChoices"]
+        self.assertEqual(len(choices), 200)
+        self.assertEqual(choices[0]["actorId"], str(self.actor.id))
+        self.assertEqual(len({c["actorId"] for c in choices}), 200)
+        self.assertTrue(result["ownerChoicesTruncated"])
+        self.assertTrue(all(0 < len(c["label"]) <= 160 for c in choices))
+        self.assertEqual([c["actorId"] for c in choices[1:]], sorted(c["actorId"] for c in choices[1:]))
+
     def test_two_private_projects_readback_and_idempotent_retry(self):
         response = self.create()
         self.assertEqual(response.status_code, 201)

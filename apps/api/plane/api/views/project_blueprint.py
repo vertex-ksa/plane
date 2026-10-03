@@ -5,6 +5,7 @@ rechecked under transaction locks. Hashes detect stale material; never authorize
 """
 from django.db import transaction, IntegrityError
 from uuid import UUID
+import unicodedata
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound, ValidationError
 from plane.api.views.base import BaseAPIView
@@ -12,6 +13,28 @@ from plane.db.models import (Workspace, WorkspaceMember, Project, ProjectMember,
     ProjectIdentifier, Issue, IssueAssignee, IssueRelation, State, DEFAULT_STATES,
     ProjectBlueprintVersion, ProjectBlueprintCommand)
 from plane.utils.project_blueprint import exact, definition, digest, plan, uuid, BlueprintInvalid
+
+
+OWNER_CHOICES_LIMIT = 200
+
+
+def owner_label(user):
+    """Display only native names, as bounded plain text without control/bidi marks."""
+    for value in (user.display_name, f"{user.first_name} {user.last_name}"):
+        clean = " ".join("".join(" " if c.isspace() else c for c in value if c.isspace() or unicodedata.category(c) not in ("Cc", "Cf", "Cs")).split())[:160]
+        if clean:
+            return clean
+    return f"Member {str(user.id)[:8]}"
+
+
+def owner_choices(workspace, actor):
+    # workspace_actor has already authorized the current actor. Keeping that
+    # actor first ensures self-assignment survives a truncated team catalogue.
+    members = WorkspaceMember.objects.filter(workspace=workspace, is_active=True,
+        member__is_active=True, role__in=[15, 20]).exclude(member=actor).select_related("member").order_by("member_id")[:OWNER_CHOICES_LIMIT]
+    choices = [{"actorId": str(actor.id), "label": owner_label(actor)}]
+    choices.extend({"actorId": str(m.member_id), "label": owner_label(m.member)} for m in members)
+    return {"ownerChoices": choices[:OWNER_CHOICES_LIMIT], "ownerChoicesTruncated": len(choices) > OWNER_CHOICES_LIMIT, "ownerChoicesLimit": OWNER_CHOICES_LIMIT}
 
 
 def workspace_actor(slug, actor):
@@ -88,7 +111,7 @@ class ProjectBlueprintEndpoint(BaseAPIView):
                 source_project__project_projectmember__member=request.user, source_project__project_projectmember__is_active=True,
                 source_project__project_projectmember__role__in=[15, 20]).order_by("-created_at")[:101]
             rows = [{"id": str(v.id), "sha256": v.sha256, "title": v.title, "definition": v.definition} for v in versions if digest(v.definition) == v.sha256]
-            return Response({"contract": "project-blueprint/1", "actorId": str(request.user.id), "workspaceId": str(w.id), "versions": rows[:100], "truncated": len(rows) > 100, "visibility": "PRIVATE", "externalReferences": "UNSUPPORTED"})
+            return Response({"contract": "project-blueprint/1", "actorId": str(request.user.id), "workspaceId": str(w.id), "versions": rows[:100], "truncated": len(rows) > 100, "visibility": "PRIVATE", "externalReferences": "UNSUPPORTED", **owner_choices(w, request.user)})
 
     def post(self, request, slug):
         try:
