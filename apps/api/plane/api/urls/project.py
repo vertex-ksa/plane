@@ -3,6 +3,7 @@
 # See the LICENSE file for details.
 
 from django.urls import path
+from plane.api.views.project_blueprint import ProjectBlueprintEndpoint, ProjectBlueprintPreviewEndpoint, ProjectBlueprintCommandEndpoint
 
 from plane.api.views import (
     ProjectListCreateAPIEndpoint,
@@ -13,6 +14,9 @@ from plane.api.views import (
 )
 
 urlpatterns = [
+    path("workspaces/<str:slug>/project-blueprints/", ProjectBlueprintEndpoint.as_view()),
+    path("workspaces/<str:slug>/project-blueprints/preview/", ProjectBlueprintPreviewEndpoint.as_view()),
+    path("workspaces/<str:slug>/project-blueprints/commands/<uuid:command_id>/", ProjectBlueprintCommandEndpoint.as_view()),
     path(
         "workspaces/<str:slug>/projects/",
         ProjectListCreateAPIEndpoint.as_view(http_method_names=["get", "post"]),
